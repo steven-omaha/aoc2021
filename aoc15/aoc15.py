@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import cache, reduce
 
 
-ADJACENT_INDICIES = [-1, 0, 1]
+ADJACENT_INDICES = [-1, 0, 1]
 
 
 class Grid:
@@ -96,8 +96,8 @@ class Position:
     def neighbours(self) -> list[Position]:
         return list(
             self + Position(x, y)
-            for x in ADJACENT_INDICIES
-            for y in ADJACENT_INDICIES
+            for x in ADJACENT_INDICES
+            for y in ADJACENT_INDICES
             if not abs(x) == abs(y)
         )
 
@@ -126,7 +126,7 @@ class AStar:
 
     def solve(self):
         while True:
-            cell = self.next_cell
+            cell = self.get_cell_with_minimum_distance_to_destination()
             self._visit(cell)
             self._join_to_graphs(cell)
             if cell.position == grid.destination:
@@ -138,15 +138,8 @@ class AStar:
         self.visited_positions.append(cell.position)
         self.adjacent_positions.remove(cell.position)
 
-    def _find_adjacent_graph_with_minimum_risk(self, position: Position) -> Graph:
-        adjacent_graphs = filter(
-            lambda graph: position in graph.last_position.neighbours, self.graphs
-        )
-        return reduce(lambda g1, g2: min(g1.risk, g2.risk), adjacent_graphs)
-
-    @property
-    def next_cell(self) -> Cell:
-        # cell with minimum distance to destination
+    def get_cell_with_minimum_distance_to_destination(self) -> Cell:
+        # TODO include risk
         return reduce(
             lambda cell0, cell1: cell1
             if (cell1 - self.grid.destination) < (cell0 - self.grid.destination)
@@ -186,32 +179,43 @@ class AStar:
         graphs = [
             graph for graph in self.graphs if graph.contains_neighbour_of_cell(cell)
         ]
-        indices = [graph.find_insertion_index(cell) for graph in graphs]
+        indices = [graph.find_best_cell_to_start_new_graph(cell) for graph in graphs]
         risks = [graph.risk_up_to_index(index) for graph, index in zip(graphs, indices)]
 
         graph, position, risk = reduce(
             lambda tuple0, tuple1: tuple0 if tuple0[2] < tuple1[2] else tuple1,
             zip(graphs, indices, risks),
         )
-        self.graphs.append(Graph([cell], extends=graph, at=position))
+        self.graphs.append(Graph([cell], extends_graph=graph, idx=position))
 
     @staticmethod
     def _append_existing_graph(cell: Cell, suitable_graphs: list[Graph]):
-        minimum_risk_graph = min(
-            [graph for graph in suitable_graphs], key=lambda g: g.risk
-        )
+        minimum_risk_graph = min(suitable_graphs, key=lambda graph: graph.risk)
         minimum_risk_graph.append(cell)
 
     def _print_result(self):
+        # list is guaranteed to be of length 1 (== only one graph holds the destination)
         graph = [graph for graph in self.graphs if self.grid.destination in graph][0]
-        print(graph)
+        result = graph.combine_parts()
+        print(result)
+        print()
+        print(result.pretty_repr)
 
 
 class Graph:
-    def __init__(self, elements: list[Cell], *, extends: Graph | None, at: int | None):
+    def __init__(
+        self,
+        elements: list[Cell],
+        *,
+        extends_graph: Graph | None,
+        idx: int | None,
+    ):
+        assert (extends_graph is None and idx is None) or (
+            extends_graph is not None and idx is not None
+        )
         self.elements: list[Cell] = elements
-        self.extends: Graph | None = extends
-        self.at: int | None = at
+        self.extends_graph: Graph | None = extends_graph
+        self.at: int | None = idx
 
     def __contains__(self, element: Cell | Position):
         if isinstance(element, Cell):
@@ -225,26 +229,35 @@ class Graph:
 
     @property
     def pretty_repr(self):
-        # TODO
-        result = ""
+        rows, min_x, min_y = self._get_empty_board_representation(self.elements)
+        for cell in self.elements:
+            rows[cell.position.x - min_x][cell.position.y - min_y] = str(cell.value)
+        result = "\n".join(["".join(row) for row in rows])
+        return result
+
+    @staticmethod
+    def _get_empty_board_representation(elements: list[Cell]) -> tuple[list[list[str]], int, int]:
+        def generate_row():
+            return [" "] * len_x
+
+        positions = [cell.position for cell in elements]
+        xs = [pos.x for pos in positions]
+        ys = [pos.y for pos in positions]
+        min_x = min(xs)
+        min_y = min(ys)
+        max_x = max(xs)
+        len_x = max_x - min_x + 1
+        rows = [generate_row() for _ in range(len_x)]
+        return rows, min_x, min_y
 
     def __getitem__(self, item: int | slice) -> list[Cell]:
-        result = self.elements[item]
-        if self.extends:
-            result = self.extends[: (self.at + 1)] + result
-        return result
+        return self.elements[item]
 
     def append(self, cell: Cell):
         self.elements.append(cell)
 
     def __len__(self):
-        if self.extends:
-            return len(self.elements) + len(self.extends)
         return len(self.elements)
-
-    @property
-    def total_elements(self) -> list[Cell]:
-        return self[: len(self)]
 
     @property
     def risk(self) -> int:
@@ -253,13 +266,11 @@ class Graph:
     def risk_up_to_index(self, idx: int | None = None) -> int:
         if idx is None:
             idx = len(self)
-        own_risk = sum([cell.value for cell in self.elements[:idx]])
-        other_risk = 0
-        if self.extends:
-            other_risk = self.extends.risk_up_to_index(self.at + 1)
-        else:  # graph that contains the start, which is not be counted
-            own_risk -= self.elements[0].value
-        return own_risk + other_risk
+        return sum([cell.value for cell in self.elements[:idx]]) - self._start_cell_risk
+
+    @property
+    def _start_cell_risk(self) -> int:
+        return self.elements[0].value
 
     @property
     def last_cell(self) -> Cell:
@@ -267,7 +278,7 @@ class Graph:
 
     @classmethod
     def from_grid(cls, grid: Grid) -> Graph:
-        return cls([grid[grid.start]], extends=None, at=None)
+        return cls([grid[grid.start]], extends_graph=None, idx=None)
 
     def can_extend_to_cell(self, cell: Cell) -> bool:
         return cell.position in self.last_cell.position.neighbours
@@ -275,11 +286,25 @@ class Graph:
     def contains_neighbour_of_cell(self, cell: Cell) -> bool:
         return any([neighbour in self for neighbour in cell.position.neighbours])
 
-    def find_insertion_index(self, cell: Cell) -> int:
+    def find_best_cell_to_start_new_graph(self, cell: Cell) -> int:
         for i, element in enumerate(self.elements):
             if cell.position in element.position.neighbours:
                 return i
         raise ValueError("Could not find a place to start a new graph.")
+
+    def combine_parts(self, *, max_index: int | None = None) -> Graph:
+        if max_index is None:
+            max_index = len(self)
+        own_elements = self.elements[:max_index]
+        if self.extends_graph:
+            subgraph = self.extends_graph.combine_parts(max_index=self.at)
+            return Graph(
+                subgraph.elements + own_elements,
+                extends_graph=None,
+                idx=None,
+            )
+        else:
+            return Graph(own_elements, extends_graph=None, idx=None)
 
 
 grid = Grid.from_file("testdata.txt")
