@@ -56,9 +56,6 @@ class Cell:
     def __repr__(self):
         return f"{self.position}: {self.value}"
 
-    def __sub__(self, other_position: Position) -> int:
-        return abs(other_position - self.position) + self.value
-
     def __eq__(self, other):
         raise NotImplementedError
 
@@ -91,8 +88,8 @@ class Position:
     def __hash__(self):
         return (self.x, self.y).__hash__()
 
-    def __sub__(self, other: Position) -> Position:
-        return Position(other.x - self.x, other.y - self.y)
+    def __sub__(self, other: Position) -> int:
+        return abs(other.x - self.x) + abs(other.y - self.y)
 
     def __abs__(self) -> int:
         return self.x + self.y
@@ -145,17 +142,28 @@ class AStar:
         self.visited_positions.append(cell.position)
         self.adjacent_positions.remove(cell.position)
 
-    @staticmethod
+    @classmethod
     def get_cell_with_minimum_distance_to_destination(
-        grid: Grid, adjacent_positions: set[Position]
+        cls, grid: Grid, adjacent_positions: set[Position]
     ) -> Cell:
-        # TODO include risk
+        print("evaluating metrics")
         return reduce(
-            lambda cell0, cell1: cell1
-            if (cell1 - grid.destination) < (cell0 - grid.destination)
-            else cell0,
+            lambda cell0, cell1: cell0
+            if cls._evaluate_possible_cell_with_metric(cell0, grid)
+            < cls._evaluate_possible_cell_with_metric(cell1, grid)
+            else cell1,
             map(lambda position: grid[position], adjacent_positions),
         )
+
+    @staticmethod
+    def _evaluate_possible_cell_with_metric(cell: Cell, grid: Grid) -> int:
+        distance = cell.position - grid.destination
+        if distance == 0:
+            return 0
+        risk = cell.value
+        metric = distance + 5 * risk
+        print(f"{distance=}, {risk=}, {metric=}")
+        return metric
 
     def __repr__(self):
         return f"{self.visited_positions=}\n{self.last_position=}\n{self.adjacent_positions=}"
@@ -314,7 +322,13 @@ class Graph:
     def risk_up_to_index(self, idx: int | None = None) -> int:
         if idx is None:
             idx = len(self)
-        return sum([cell.value for cell in self.elements[:idx]]) - self._start_cell_risk
+        own_risk = sum([cell.value for cell in self.elements[:idx+1]])
+
+        if self.extends_graph is None:
+            return own_risk - self._start_cell_risk
+
+        extended_graph_risk = self.extends_graph.risk_up_to_index(self.at_idx)
+        return own_risk + extended_graph_risk
 
     @property
     def _start_cell_risk(self) -> int:
