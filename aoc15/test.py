@@ -26,3 +26,15 @@ class TestGraph:
             Graph([cell20, cell30], extends_graph=graph0, at_idx=0)
 
 
+class TestPosition:
+    def test_neighbours(self):
+        pos = Position(1, 1)
+        assert Position(1, 0) in pos.neighbours
+        assert Position(1, 2) in pos.neighbours
+        assert Position(0, 1) in pos.neighbours
+        assert Position(2, 1) in pos.neighbours
+        assert Position(1, 1) not in pos.neighbours
+        assert Position(0, 0) not in pos.neighbours
+        assert Position(2, 0) not in pos.neighbours
+        assert Position(2, 2) not in pos.neighbours
+        assert Position(0, 2) not in pos.neighbours

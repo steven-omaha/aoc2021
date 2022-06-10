@@ -343,7 +343,7 @@ class Graph:
     def combine_parts(self, *, max_index: int | None = None) -> Graph:
         if max_index is None:
             max_index = len(self)
-        own_elements = self.elements[:max_index+1]
+        own_elements = self.elements[: max_index + 1]
         if self.extends_graph:
             subgraph = self.extends_graph.combine_parts(max_index=self.at_idx)
             return Graph(
@@ -358,11 +358,7 @@ class Graph:
 def main():
     grid = Grid.from_file("testdata.txt")
     astar = AStar(grid)
-
-    # print(astar)
-    # print()
     astar.solve()
-    # print(astar)
 
 
 if __name__ == "__main__":
