@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from functools import cache, reduce
+from functools import reduce, cached_property
+from typing import overload
 
 
 ADJACENT_INDICES = [-1, 0, 1]
@@ -13,8 +14,7 @@ class Grid:
     def __getitem__(self, position: Position) -> Cell:
         return self._get_cell_by_position(position)
 
-    @property
-    @cache
+    @cached_property
     def destination(self) -> Position:
         return reduce(
             lambda pos0, pos1: pos1 if pos1 > pos0 else pos0,
@@ -42,8 +42,7 @@ class Grid:
         ]
         return Grid(cells)
 
-    @property
-    @cache
+    @cached_property
     def boundary(self) -> Boundary:
         return Boundary(self.start, self.destination)
 
@@ -52,6 +51,7 @@ class Cell:
     def __init__(self, position: Position, value: int):
         self.position = position
         self.value = value
+        assert 1 <= self.value <= 9
 
     def __repr__(self):
         return f"{self.position}: {self.value}"
@@ -74,11 +74,16 @@ class Position:
     def __repr__(self) -> str:
         return f"({self.x}, {self.y})"
 
-    def __eq__(self, other: Position) -> bool:
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Position):
+            raise NotImplementedError
         return self.x == other.x and self.y == other.y
 
     def __lt__(self, other: Position) -> bool:
         return (self.x + self.y) < (other.x + other.y)
+
+    def __gt__(self, other: Position) -> bool:
+        return not self < other
 
     def __add__(self, other: Position) -> Position:
         return Position(self.x + other.x, self.y + other.y)
@@ -126,10 +131,12 @@ class AStar:
 
     def solve(self):
         while True:
-            cell = self.get_cell_with_minimum_distance_to_destination()
+            cell = self.get_cell_with_minimum_distance_to_destination(
+                self.grid, self.adjacent_positions
+            )
             self._visit(cell)
             self._join_to_graphs(cell)
-            if cell.position == grid.destination:
+            if cell.position == self.grid.destination:
                 break
             self._update_adjacent_positions(cell.position)
         self._print_result()
@@ -138,13 +145,16 @@ class AStar:
         self.visited_positions.append(cell.position)
         self.adjacent_positions.remove(cell.position)
 
-    def get_cell_with_minimum_distance_to_destination(self) -> Cell:
+    @staticmethod
+    def get_cell_with_minimum_distance_to_destination(
+        grid: Grid, adjacent_positions: set[Position]
+    ) -> Cell:
         # TODO include risk
         return reduce(
             lambda cell0, cell1: cell1
-            if (cell1 - self.grid.destination) < (cell0 - self.grid.destination)
+            if (cell1 - grid.destination) < (cell0 - grid.destination)
             else cell0,
-            map(lambda position: self.grid[position], self.adjacent_positions),
+            map(lambda position: grid[position], adjacent_positions),
         )
 
     def __repr__(self):
@@ -155,15 +165,16 @@ class AStar:
         return self.visited_positions[-1]
 
     def _update_adjacent_positions(self, last_position: Position):
+        last_position_neighbours = set(
+            [
+                neighbour
+                for neighbour in last_position.neighbours
+                if neighbour in self.grid.boundary
+                and neighbour not in self.visited_positions
+            ]
+        )
         self.adjacent_positions = self.adjacent_positions.union(
-            set(
-                [
-                    neighbour
-                    for neighbour in last_position.neighbours
-                    if neighbour in self.grid.boundary
-                    and neighbour not in self.visited_positions
-                ]
-            )
+            last_position_neighbours
         )
 
     def _join_to_graphs(self, cell: Cell):
@@ -186,7 +197,7 @@ class AStar:
             lambda tuple0, tuple1: tuple0 if tuple0[2] < tuple1[2] else tuple1,
             zip(graphs, indices, risks),
         )
-        self.graphs.append(Graph([cell], extends_graph=graph, idx=position))
+        self.graphs.append(Graph([cell], extends_graph=graph, at_idx=position))
 
     @staticmethod
     def _append_existing_graph(cell: Cell, suitable_graphs: list[Graph]):
@@ -207,15 +218,42 @@ class Graph:
         self,
         elements: list[Cell],
         *,
-        extends_graph: Graph | None,
-        idx: int | None,
+        extends_graph: Graph | None = None,
+        at_idx: int | None = None,
     ):
-        assert (extends_graph is None and idx is None) or (
-            extends_graph is not None and idx is not None
+        assert (extends_graph is None and at_idx is None) or (
+            extends_graph is not None and at_idx is not None
         )
-        self.elements: list[Cell] = elements
-        self.extends_graph: Graph | None = extends_graph
-        self.at: int | None = idx
+
+        self.elements = elements
+        self.extends_graph = extends_graph
+        self.at_idx = at_idx
+
+        assert self._is_contiguous
+
+    @property
+    def _is_contiguous(self) -> bool:
+        if len(self.elements) in [0, 1]:
+            return True
+
+        is_contiguous_inner = all(
+            map(
+                lambda e: e[0].position in e[1].position.neighbours,
+                zip(self.elements[:-1], self.elements[1:]),
+            )
+        )
+
+        if self.extends_graph is None:
+            return is_contiguous_inner
+
+        assert self.extends_graph is not None and self.at_idx is not None
+
+        is_contiguous_outer = (
+            self.extends_graph[self.at_idx].position
+            in self.elements[0].position.neighbours
+        )
+
+        return is_contiguous_inner and is_contiguous_outer
 
     def __contains__(self, element: Cell | Position):
         if isinstance(element, Cell):
@@ -236,7 +274,9 @@ class Graph:
         return result
 
     @staticmethod
-    def _get_empty_board_representation(elements: list[Cell]) -> tuple[list[list[str]], int, int]:
+    def _get_empty_board_representation(
+        elements: list[Cell],
+    ) -> tuple[list[list[str]], int, int]:
         def generate_row():
             return [" "] * len_x
 
@@ -250,7 +290,15 @@ class Graph:
         rows = [generate_row() for _ in range(len_x)]
         return rows, min_x, min_y
 
-    def __getitem__(self, item: int | slice) -> list[Cell]:
+    @overload
+    def __getitem__(self, item: int) -> Cell:
+        pass
+
+    @overload
+    def __getitem__(self, item: slice) -> list[Cell]:
+        pass
+
+    def __getitem__(self, item: int | slice) -> Cell | list[Cell]:
         return self.elements[item]
 
     def append(self, cell: Cell):
@@ -278,7 +326,7 @@ class Graph:
 
     @classmethod
     def from_grid(cls, grid: Grid) -> Graph:
-        return cls([grid[grid.start]], extends_graph=None, idx=None)
+        return cls([grid[grid.start]], extends_graph=None, at_idx=None)
 
     def can_extend_to_cell(self, cell: Cell) -> bool:
         return cell.position in self.last_cell.position.neighbours
@@ -295,22 +343,27 @@ class Graph:
     def combine_parts(self, *, max_index: int | None = None) -> Graph:
         if max_index is None:
             max_index = len(self)
-        own_elements = self.elements[:max_index]
+        own_elements = self.elements[:max_index+1]
         if self.extends_graph:
-            subgraph = self.extends_graph.combine_parts(max_index=self.at)
+            subgraph = self.extends_graph.combine_parts(max_index=self.at_idx)
             return Graph(
                 subgraph.elements + own_elements,
                 extends_graph=None,
-                idx=None,
+                at_idx=None,
             )
         else:
-            return Graph(own_elements, extends_graph=None, idx=None)
+            return Graph(own_elements, extends_graph=None, at_idx=None)
 
 
-grid = Grid.from_file("testdata.txt")
-astar = AStar(grid)
+def main():
+    grid = Grid.from_file("testdata.txt")
+    astar = AStar(grid)
 
-# print(astar)
-# print()
-astar.solve()
-# print(astar)
+    # print(astar)
+    # print()
+    astar.solve()
+    # print(astar)
+
+
+if __name__ == "__main__":
+    main()
